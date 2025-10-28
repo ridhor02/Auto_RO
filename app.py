@@ -29,34 +29,44 @@ MAX_RETRIES = 3
 # ==============================
 def setup_driver_for_streamlit():
     """Setup ChromeDriver khusus untuk Streamlit Cloud"""
-    # Install ChromeDriver
-    chromedriver_autoinstaller.install()
-    
-    # Setup Chrome options
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-features=VizDisplayCompositor")
-    options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("--window-size=1920,1080")
-    
-    # Untuk bypass automation detection
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    
     try:
-        service = Service()
-        driver = webdriver.Chrome(service=service, options=options)
+        # Install ChromeDriver dengan opsi yang lebih kompatibel
+        chromedriver_autoinstaller.install()
+        
+        # Setup Chrome options untuk Streamlit Cloud
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-features=VizDisplayCompositor")
+        options.add_argument("--remote-debugging-port=9222")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-software-rasterizer")
+        
+        # Untuk bypass automation detection
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        
+        # Gunakan Chrome yang sudah terinstall di system
+        driver = webdriver.Chrome(options=options)
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+        
         return driver
+        
     except Exception as e:
         st.error(f"❌ Gagal setup ChromeDriver: {e}")
-        # Fallback ke webdriver_manager
+        
+        # Fallback: coba tanpa chromedriver_autoinstaller
         try:
             service = Service(ChromeDriverManager().install())
+            options = webdriver.ChromeOptions()
+            options.add_argument("--headless=new")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            
             driver = webdriver.Chrome(service=service, options=options)
             return driver
         except Exception as fallback_error:
@@ -111,7 +121,8 @@ def get_ro_number_from_attribute(driver, wait, element_id="RO_NO1I_3", max_retri
 
             # Cari frame yang berisi elemen RO
             found = False
-            for i, frame in enumerate(driver.find_elements(By.TAG_NAME, "iframe")):
+            frames = driver.find_elements(By.TAG_NAME, "iframe")
+            for i, frame in enumerate(frames):
                 try:
                     driver.switch_to.default_content()
                     driver.switch_to.frame(frame)
@@ -130,11 +141,16 @@ def get_ro_number_from_attribute(driver, wait, element_id="RO_NO1I_3", max_retri
             driver.execute_script("arguments[0].scrollIntoView(true);", elem)
             time.sleep(1)
 
-            value = elem.get_attribute("data-value") or elem.get_attribute("value") or elem.text
+            # Coba berbagai atribut untuk mendapatkan nilai
+            value = (elem.get_attribute("data-value") or 
+                    elem.get_attribute("value") or 
+                    elem.text or
+                    elem.get_attribute("innerText"))
 
             if value and value.strip() and value.strip().lower() != "none":
-                st.success(f"✅ RO Number ditemukan: {value.strip()}")
-                return value.strip(), None
+                cleaned_value = value.strip()
+                st.success(f"✅ RO Number ditemukan: {cleaned_value}")
+                return cleaned_value, None
 
             last_err = f"Percobaan {attempt}: data-value kosong"
             st.warning(last_err)
@@ -144,7 +160,6 @@ def get_ro_number_from_attribute(driver, wait, element_id="RO_NO1I_3", max_retri
         except Exception as e:
             last_err = f"Percobaan {attempt} error: {e}"
             st.warning(f"⚠️ {last_err}")
-            traceback.print_exc()
             time.sleep(2)
             continue
 
@@ -157,7 +172,29 @@ def validate_dataframe(df):
         return False, f"File harus memiliki minimal {required_cols} kolom"
     if len(df) == 0:
         return False, "File tidak memiliki data"
+    
+    # Cek kolom penting
+    if df.iloc[:, 1].isna().all():
+        return False, "Kolom Stock Code (kolom 2) kosong atau tidak valid"
+    
     return True, None
+
+def switch_to_correct_frame(driver, element_id):
+    """Switch ke frame yang mengandung element tertentu"""
+    driver.switch_to.default_content()
+    frames = driver.find_elements(By.TAG_NAME, "iframe")
+    
+    for frame in frames:
+        try:
+            driver.switch_to.default_content()
+            driver.switch_to.frame(frame)
+            if driver.find_elements(By.ID, element_id):
+                return True
+        except Exception:
+            continue
+    
+    driver.switch_to.default_content()
+    return False
 
 # ==============================
 # STREAMLIT UI
@@ -186,6 +223,7 @@ with st.expander("ℹ️ Informasi Aplikasi"):
     - Pastikan file Excel memiliki minimal 8 kolom
     - Koneksi internet stabil diperlukan
     - Proses mungkin memakan waktu beberapa menit
+    - Pastikan credentials login valid
     """)
 
 with st.sidebar:
@@ -239,6 +277,7 @@ if uploaded_file is not None:
 
             # Warning untuk proses lama
             st.warning("⏳ Proses mungkin memakan waktu beberapa menit. Jangan tutup browser!")
+            st.info("💡 Pastikan koneksi internet stabil")
 
             driver = None
             try:
@@ -251,17 +290,28 @@ if uploaded_file is not None:
                 # Login
                 with st.spinner(f"🔐 Login ke {env_choice}..."):
                     driver.get(TARGET_URL)
-                    wait.until(EC.presence_of_element_located((By.ID, "username"))).send_keys(username)
-                    driver.find_element(By.ID, "password").send_keys(password)
-                    driver.find_element(By.ID, "login").click()
+                    time.sleep(3)
+                    
+                    # Switch to login frame jika ada
+                    switch_to_correct_frame(driver, "username")
+                    
+                    username_field = wait.until(EC.element_to_be_clickable((By.ID, "username")))
+                    username_field.send_keys(username)
+                    
+                    password_field = driver.find_element(By.ID, "password")
+                    password_field.send_keys(password)
+                    
+                    login_button = driver.find_element(By.ID, "login")
+                    login_button.click()
                     time.sleep(5)
                 st.success("✅ Login berhasil")
 
                 # Buka MSO240
                 with st.spinner("📋 Membuka MSO240..."):
-                    quick = wait.until(EC.presence_of_element_located((By.ID, "quicklaunch")))
+                    driver.switch_to.default_content()
+                    quick = wait.until(EC.element_to_be_clickable((By.ID, "quicklaunch")))
                     quick.send_keys(QUICK_LAUNCH_CODE + Keys.ENTER)
-                    time.sleep(6)
+                    time.sleep(8)  # Beri waktu lebih untuk loading
                 st.success("✅ MSO240 terbuka")
 
                 # Inisialisasi progress
@@ -287,57 +337,72 @@ if uploaded_file is not None:
                         continue
 
                     try:
-                        # === Tahap 1: Isi Stock Code & Quantity ===
+                        # Switch ke frame yang benar
+                        driver.switch_to.default_content()
+                        switch_to_correct_frame(driver, "STOCK_CODE1I_3")
+
+                        # === Tahap 1: Isi Stock Code ===
                         success, error = safe_fill_field(driver, wait, "STOCK_CODE1I_3", stock)
                         if not success:
                             raise Exception(f"Gagal isi Stock Code: {error}")
-                        time.sleep(2)
-
-                        # Input Quantity
-                        qty_field = wait.until(EC.element_to_be_clickable((By.ID, "QTY_UOI1I_25")))
-                        qty_field.clear()
-                        qty_field.send_keys(qty)
-                        qty_field.send_keys(Keys.TAB)
-                        time.sleep(2)
+                        time.sleep(3)  # Beri waktu untuk generate RO
 
                         # === Tahap 2: Ambil RO Number ===
                         ro_no, error_msg = get_ro_number_from_attribute(driver, wait, "RO_NO1I_3", max_retries=3)
                         if ro_no:
+                            # === Tahap 3: Isi Quantity jika RO berhasil ===
+                            qty_field = wait.until(EC.element_to_be_clickable((By.ID, "QTY_UOI1I_25")))
+                            qty_field.clear()
+                            qty_field.send_keys(qty)
+                            qty_field.send_keys(Keys.TAB)
+                            time.sleep(2)
+
+                            # === Tahap 4: Isi Warehouse jika ada ===
+                            if wh and wh.lower() != "nan":
+                                try:
+                                    wh_success, wh_error = safe_fill_field(driver, wait, "WHSE1I_4", wh)
+                                    if not wh_success:
+                                        st.warning(f"⚠️ Gagal isi warehouse: {wh_error}")
+                                except Exception as wh_e:
+                                    st.warning(f"⚠️ Error isi warehouse: {wh_e}")
+
+                            # === Tahap 5: Isi Field Tambahan ===
+                            try:
+                                vat_dropdown = wait.until(EC.element_to_be_clickable((By.ID, "VAT_CODE1I_39_dropdown")))
+                                vat_dropdown.click()
+                                time.sleep(0.5)
+                                active_elem = driver.switch_to.active_element
+                                active_elem.send_keys("00")
+                                active_elem.send_keys(Keys.ENTER)
+                                time.sleep(1)
+                            except Exception as vat_e:
+                                st.warning(f"⚠️ Skip VAT code: {vat_e}")
+
+                            try:
+                                proc_dropdown = wait.until(EC.element_to_be_clickable((By.ID, "PROCESS_CODE1I_8_dropdown")))
+                                proc_dropdown.click()
+                                time.sleep(0.3)
+                                driver.switch_to.active_element.send_keys("S")
+                                driver.switch_to.active_element.send_keys(Keys.ENTER)
+                                time.sleep(1)
+                            except Exception as proc_e:
+                                st.warning(f"⚠️ Skip process code: {proc_e}")
+
+                            # Simpan RO
+                            try:
+                                save_btn = wait.until(EC.element_to_be_clickable((By.ID, "toolbar-2")))
+                                save_btn.click()
+                                time.sleep(3)
+                                st.success(f"✅ Baris {idx+1}: RO {ro_no} berhasil disimpan")
+                            except Exception as save_e:
+                                st.warning(f"⚠️ Gagal save RO: {save_e}")
+
                             hasil_ro.append(ro_no)
                             success_count += 1
-                            st.success(f"✅ Baris {idx+1}: RO {ro_no}")
                         else:
                             hasil_ro.append(f"GAGAL - {error_msg}")
                             failed_count += 1
                             st.error(f"❌ Baris {idx+1}: {error_msg}")
-
-                        # === Tahap 3: Isi Field Tambahan ===
-                        try:
-                            vat_dropdown = wait.until(EC.element_to_be_clickable((By.ID, "VAT_CODE1I_39_dropdown")))
-                            vat_dropdown.click()
-                            time.sleep(0.5)
-                            active_elem = driver.switch_to.active_element
-                            active_elem.send_keys("00")
-                            time.sleep(1)
-                        except:
-                            pass
-
-                        try:
-                            proc_dropdown = wait.until(EC.element_to_be_clickable((By.ID, "PROCESS_CODE1I_8_dropdown")))
-                            proc_dropdown.click()
-                            time.sleep(0.3)
-                            driver.switch_to.active_element.send_keys("S")
-                            time.sleep(1)
-                        except:
-                            pass
-
-                        # Simpan RO
-                        try:
-                            save_btn = wait.until(EC.element_to_be_clickable((By.ID, "toolbar-2")))
-                            save_btn.click()
-                            time.sleep(2)
-                        except:
-                            pass
 
                     except Exception as e:
                         error_msg = f"Error: {str(e)}"
@@ -368,6 +433,14 @@ if uploaded_file is not None:
                 col2.metric("❌ Gagal", failed_count)
                 col3.metric("📊 Total", len(df))
 
+                # Tampilkan hasil detail
+                st.subheader("📋 Detail Hasil")
+                result_df = df[['RO_NUMBER']].copy()
+                result_df['Status'] = result_df['RO_NUMBER'].apply(
+                    lambda x: '✅ Berhasil' if not x.startswith(('SKIP', 'GAGAL', 'ERROR')) else '❌ Gagal'
+                )
+                st.dataframe(result_df)
+
                 # Download button
                 with open(output_filename, "rb") as f:
                     st.download_button(
@@ -386,8 +459,11 @@ if uploaded_file is not None:
                 st.code(traceback.format_exc())
             finally:
                 if driver:
-                    driver.quit()
-                    st.info("🔒 Browser ditutup")
+                    try:
+                        driver.quit()
+                        st.info("🔒 Browser ditutup")
+                    except:
+                        pass
 
     except Exception as e:
         st.error(f"❌ Gagal memproses file: {str(e)}")
@@ -398,4 +474,4 @@ else:
 
 # Footer
 st.divider()
-st.caption("🤖 Otomasi RO Ellipse v1.0 | Streamlit Cloud Ready")
+st.caption("🤖 Otomasi RO Ellipse v2.0 | Streamlit Cloud Ready")
