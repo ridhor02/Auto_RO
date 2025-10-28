@@ -33,30 +33,11 @@ def simulate_ro_processing(df, username, environment):
             continue
             
         # Generate RO number simulasi
-        ro_number = f"RO{int(time.time())}{idx:04d}"
+        timestamp = int(time.time())
+        ro_number = f"RO{timestamp}{idx+1:04d}"
         results.append(ro_number)
         
     return results
-
-# ==============================
-# FUNGSI UTAMA (Manual Setup untuk Local)
-# ==============================
-def setup_selenium_local():
-    """Setup Selenium untuk environment local saja"""
-    try:
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        
-        options = Options()
-        options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        
-        driver = webdriver.Chrome(options=options)
-        return driver
-    except Exception as e:
-        st.error(f"❌ Selenium tidak tersedia: {e}")
-        return None
 
 def validate_dataframe(df):
     """Validasi struktur dataframe"""
@@ -154,6 +135,8 @@ if uploaded_file is not None:
                 st.error("❌ Username harus diisi di sidebar!")
                 st.stop()
 
+            use_simulation = True
+            
             if operation_mode == "🚀 Mode Real":
                 st.warning("""
                 ⚠️ **Mode Real di Streamlit Cloud**
@@ -165,8 +148,6 @@ if uploaded_file is not None:
                 - Local computer dengan Chrome installed
                 - VM/Server yang mendukung Chrome Driver
                 """)
-                use_simulation = True
-            else:
                 use_simulation = True
 
             # Jalankan proses
